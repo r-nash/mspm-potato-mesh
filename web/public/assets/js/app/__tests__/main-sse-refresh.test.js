@@ -161,6 +161,44 @@ test('a ping arriving mid-fetch does not start a second refresh before the first
   });
 });
 
+test('messages ping with a delta re-renders chat but not the table or map (Phase 2 stage routing)', async () => {
+  await runLiveApp({}, async ({ testUtils, FakeEventSource }) => {
+    const es = FakeEventSource.instances[0];
+    testUtils.resetStageRenderCounts();
+    es.dispatch('change', { data: JSON.stringify({ collection: 'messages' }) });
+    await testUtils.flushLiveRefresh();
+    const counts = testUtils.getStageRenderCounts();
+    assert.equal(counts.chat, 1, 'chat renders once for the messages delta');
+    assert.equal(counts.table, 0, 'table must not re-render for a messages-only delta');
+    assert.equal(counts.map, 0, 'map must not re-render for a messages-only delta');
+  });
+});
+
+test('a nodes ping with an empty delta renders nothing (Phase 2 stage routing)', async () => {
+  await runLiveApp({}, async ({ testUtils, FakeEventSource }) => {
+    const es = FakeEventSource.instances[0];
+    const originalFetch = globalThis.fetch;
+    // The harness's stub fetch always returns the same fixture body for a
+    // given URL prefix, so a plain nodes ping would "change" the same row
+    // again. Override just the nodes route to answer empty, simulating the
+    // real case this stage routes on: a ping whose delta fetch returns 0 rows.
+    globalThis.fetch = (url, ...rest) => {
+      if (url.startsWith('/api/nodes')) {
+        return Promise.resolve({ ok: true, status: 200, json: () => Promise.resolve([]) });
+      }
+      return originalFetch(url, ...rest);
+    };
+    try {
+      testUtils.resetStageRenderCounts();
+      es.dispatch('change', { data: JSON.stringify({ collection: 'nodes' }) });
+      await testUtils.flushLiveRefresh();
+      assert.deepEqual(testUtils.getStageRenderCounts(), { table: 0, map: 0, chat: 0 });
+    } finally {
+      globalThis.fetch = originalFetch;
+    }
+  });
+});
+
 test('EVENTS disabled by config opens no stream and uses the legacy poll', async () => {
   await runLiveApp(
     { configOverrides: { liveUpdatesEnabled: false } },

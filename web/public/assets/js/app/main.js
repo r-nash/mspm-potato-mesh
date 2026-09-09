@@ -788,6 +788,10 @@ export function initializeApp(config) {
     allTraces = traceEntries.map(entry => entry.value);
     allWaypoints = waypointEntries.map(entry => entry.value);
     rebuildNodeIndex(allNodes);
+    // The seeded accumulators bypass refresh()'s per-tick index upkeep, so
+    // sync the Phase 8 indexes here or the first partial rebuild would see
+    // none of the cached position/telemetry history.
+    resyncSnapshotIndexes();
     const [seededChat, seededEncrypted] = await Promise.all([
       messageNodeHydrator.hydrate(messageEntries.map(entry => entry.value), nodesById),
       messageNodeHydrator.hydrate(encryptedEntries.map(entry => entry.value), nodesById),
@@ -4392,6 +4396,28 @@ export function initializeApp(config) {
   }
 
   /**
+   * Resync every Phase 8 index (`nodeArrayPositionById`,
+   * `positionSnapshotIndex`, `telemetrySnapshotIndex`) exactly against the
+   * current `allNodes` / `allPositionEntries` / `allTelemetryEntries`. Called
+   * by every path that replaces those arrays wholesale without going through
+   * the partial merge in `refresh()` — the full rebuild, and the cache seed
+   * (which fills the accumulators straight from IndexedDB and would otherwise
+   * leave the indexes empty for the whole session on a warm load, so the
+   * first partial rebuild could only see this session's delta rows).
+   *
+   * @returns {void}
+   */
+  function resyncSnapshotIndexes() {
+    nodeArrayPositionById = new Map();
+    allNodes.forEach((node, index) => {
+      const id = node && (node.node_id ?? node.nodeId);
+      if (id != null) nodeArrayPositionById.set(id, index);
+    });
+    positionSnapshotIndex.rebuild(allPositionEntries);
+    telemetrySnapshotIndex.rebuild(allTelemetryEntries);
+  }
+
+  /**
    * Re-aggregate the per-source snapshot arrays and re-enrich the node
    * collection (display name, position, distance, telemetry) from the current
    * module-level ``all*`` sources, then rebuild the node lookup index. Shared by
@@ -4486,13 +4512,7 @@ export function initializeApp(config) {
     allNodes = aggregatedNodes;
     // Full rebuild resyncs every Phase 8 index exactly against the current
     // authoritative state, so a partial rebuild's next lookup is never stale.
-    nodeArrayPositionById = new Map();
-    allNodes.forEach((node, index) => {
-      const id = node && (node.node_id ?? node.nodeId);
-      if (id != null) nodeArrayPositionById.set(id, index);
-    });
-    positionSnapshotIndex.rebuild(allPositionEntries);
-    telemetrySnapshotIndex.rebuild(allTelemetryEntries);
+    resyncSnapshotIndexes();
     // Rebuild lookup maps so marker updates and message hydration always resolve
     // to the latest node objects.
     rebuildNodeIndex(allNodes);

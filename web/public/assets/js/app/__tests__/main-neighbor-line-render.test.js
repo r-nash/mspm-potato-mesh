@@ -79,7 +79,7 @@ const NODES = [
  *   `testUtils.refresh()` call.
  * @returns {{ testUtils: Object, leaflet: Object, cleanup: Function }}
  */
-function setupMapAppWithFetch(neighborsProvider) {
+function setupMapAppWithFetch(neighborsProvider, { tracesProvider = () => [], nodes = NODES } = {}) {
   const env = createDomEnvironment({ includeBody: true });
   const mapContainer = env.createElement('div', 'map');
   env.registerElement('map', mapContainer);
@@ -101,8 +101,9 @@ function setupMapAppWithFetch(neighborsProvider) {
   globalThis.L = leaflet;
   globalThis.fetch = url => {
     if (url.startsWith('/api/nodes/')) return jsonResponse(null);
-    if (url.startsWith('/api/nodes')) return jsonResponse(NODES);
+    if (url.startsWith('/api/nodes')) return jsonResponse(nodes);
     if (url.startsWith('/api/neighbors')) return jsonResponse(neighborsProvider());
+    if (url.startsWith('/api/traces')) return jsonResponse(tracesProvider());
     return jsonResponse([]);
   };
 
@@ -155,6 +156,37 @@ test('a changed SNR recreates exactly the one affected neighbor polyline', async
       polylinesAfterChange, polylinesAfterFirst + 1,
       'a changed segment recreates exactly one new polyline (the stale one is removed, not left in place)',
     );
+  } finally {
+    cleanup();
+  }
+});
+
+test('trace lines share one canvas renderer across renders instead of leaking one per render', async () => {
+  const nodesWithNums = NODES.map((node, index) => ({ ...node, num: index + 1 }));
+  let rxTime = NOW;
+  const traces = () => [{ id: 1, rx_time: rxTime, src: 1, dest: 2 }];
+  const { testUtils, leaflet, cleanup } = setupMapAppWithFetch(() => [], { tracesProvider: traces, nodes: nodesWithNums });
+  let canvasRenderers = 0;
+  // The stub has no L.canvas; the real Leaflet does, and every renderer
+  // handed to a path's `renderer` option is added to the map for good.
+  leaflet.canvas = () => {
+    canvasRenderers += 1;
+    return { _stubCanvasRenderer: true };
+  };
+  try {
+    await testUtils.initialLoad;
+    assert.equal(canvasRenderers, 1, 'the first trace render creates the canvas renderer');
+    const tracePolylines = () => leaflet._recorded.polylines.filter(
+      line => line.options && line.options.renderer && line.options.renderer._stubCanvasRenderer,
+    );
+    assert.ok(tracePolylines().length >= 1, 'trace polylines draw through the canvas renderer');
+
+    rxTime += 1; // a changed trace redraws the trace layer on the next tick
+    await testUtils.refresh();
+    rxTime += 1;
+    await testUtils.refresh();
+
+    assert.equal(canvasRenderers, 1, 'later trace renders must reuse the one renderer, not create another');
   } finally {
     cleanup();
   }

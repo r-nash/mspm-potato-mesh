@@ -244,6 +244,56 @@ test('a 3-page chat backfill renders the chat log at most twice (Phase 6 coalesc
   }
 });
 
+test('a chat-history page waiting alongside a collection page is painted by the same flush (Phase 6)', async () => {
+  const now = Math.floor(Date.now() / 1000);
+  const message = (id, text) => ({
+    id, rx_time: now - (500000 - id), from_id: '!aabb', text, channel: 0, channel_name: 'Primary', portnum: 1,
+  });
+  function stubFetch(url) {
+    if (url.startsWith('/api/messages')) {
+      if (url.includes('encrypted=true') || url.includes('before=')) return jsonResponse([]);
+      return jsonResponse([message(499999, 'newest')]);
+    }
+    if (url.startsWith('/api/nodes/')) {
+      return jsonResponse({ node_id: '!aabb', short_name: 'AB', role: 'CLIENT' });
+    }
+    if (url.startsWith('/api/nodes')) {
+      return jsonResponse([{ node_id: '!aabb', last_heard: now, short_name: 'AB', role: 'CLIENT' }]);
+    }
+    return jsonResponse([]);
+  }
+  const env = createDomEnvironment({ includeBody: true });
+  const chat = env.createElement('div', 'chat');
+  env.registerElement('chat', chat);
+  const originalFetch = globalThis.fetch;
+  globalThis.fetch = url => stubFetch(url);
+  try {
+    const { _testUtils } = initializeApp(BASE_CONFIG);
+    await _testUtils.initialLoad;
+    await _testUtils.flushBackfill();
+    await _testUtils.flushCollectionBackfills();
+    const tabLabel = () => chat.querySelectorAll('.chat-tab')
+      .map(tab => tab.textContent)
+      .find(text => text.includes('Primary')) || '';
+    assert.ok(tabLabel().includes('(1)'), `one message painted before the pages land: ${tabLabel()}`);
+
+    // Both kinds of page merge before the coalesced repaint runs — the shape
+    // the cold load produces when the chat and collection backfills overlap.
+    await _testUtils.commitHistoricalMessages([message(499990, 'older')]);
+    _testUtils.commitBackfillPage('nodes', [{ node_id: '!ccdd', last_heard: now - 100, short_name: 'CD', role: 'CLIENT' }]);
+    assert.equal(_testUtils.isBackfillChatDirty(), true, 'the history page is waiting to be painted');
+    _testUtils.flushBackfillRepaint();
+
+    assert.equal(_testUtils.isBackfillChatDirty(), false, 'a flush that paints collection pages must paint the chat page too');
+    assert.equal(_testUtils.getLoadedMessageCount(), 2, 'the history page merged');
+    assert.equal(_testUtils.getLoadedNodeCount(), 2, 'the nodes page merged');
+    assert.ok(tabLabel().includes('(2)'), `the same flush must paint the history page: ${tabLabel()}`);
+  } finally {
+    globalThis.fetch = originalFetch;
+    env.cleanup();
+  }
+});
+
 test('a failed background backfill is swallowed and leaves the newest page intact (#802)', async () => {
   const now = Math.floor(Date.now() / 1000);
   // Full newest page so the backfill attempts a second (older) page, which here

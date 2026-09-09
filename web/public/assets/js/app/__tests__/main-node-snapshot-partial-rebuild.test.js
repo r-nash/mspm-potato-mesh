@@ -135,3 +135,44 @@ test('a nodes-collection change to one node does not recreate an unrelated node 
     env.cleanup();
   }
 });
+
+test('a brand-new node arriving via a live delta is not duplicated in the loaded set', async () => {
+  const env = createDomEnvironment({ includeBody: true });
+  env.registerElement('chat', env.createElement('div', 'chat'));
+  const originalFetch = globalThis.fetch;
+  const nodeB = { node_id: '!b', short_name: 'B', long_name: 'Node B', role: 'CLIENT', last_heard: NOW };
+  let nodesCallCount = 0;
+  globalThis.fetch = url => {
+    if (url.startsWith('/api/nodes/')) return jsonResponse(null);
+    if (url.startsWith('/api/nodes')) {
+      nodesCallCount += 1;
+      // Cold load only ever saw !a; !b shows up for the first time on the
+      // live delta (e.g. a node freshly joining the mesh).
+      return jsonResponse(nodesCallCount === 1 ? [NODES[0]] : [nodeB]);
+    }
+    return jsonResponse([]);
+  };
+  try {
+    const { _testUtils } = initializeApp(BASE_CONFIG);
+    await _testUtils.initialLoad;
+    assert.equal(_testUtils.getLoadedNodeCount(), 1, 'cold load sees only !a');
+
+    await _testUtils.refresh();
+
+    assert.equal(
+      _testUtils.getLoadedNodeCount(), 2,
+      'the new node is added exactly once, not duplicated alongside !a',
+    );
+    const nodeBAfter = _testUtils.getNodeById('!b');
+    assert.ok(nodeBAfter, 'the new node is present');
+    assert.equal(nodeBAfter.short_name, 'B');
+
+    // A second delta reusing the same (still new-ish) node must still not
+    // duplicate it — the splice-back path must now find and overwrite it.
+    await _testUtils.refresh();
+    assert.equal(_testUtils.getLoadedNodeCount(), 2, 'a repeat touch of the same node stays at one row for it');
+  } finally {
+    globalThis.fetch = originalFetch;
+    env.cleanup();
+  }
+});

@@ -30,6 +30,9 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import { createDomEnvironment } from './dom-environment.js';
+import { createFakeIndexedDb } from './fake-indexeddb.js';
+import { createIndexedDbBackend } from '../main/data-cache-idb.js';
+import { CACHE_SCHEMA_VERSION } from '../main/data-cache.js';
 import { initializeApp } from '../main.js';
 
 const NOW = Math.floor(Date.now() / 1000);
@@ -173,6 +176,43 @@ test('a brand-new node arriving via a live delta is not duplicated in the loaded
     assert.equal(_testUtils.getLoadedNodeCount(), 2, 'a repeat touch of the same node stays at one row for it');
   } finally {
     globalThis.fetch = originalFetch;
+    env.cleanup();
+  }
+});
+
+test('a warm cache seed primes the snapshot indexes so a partial rebuild sees cached history', async () => {
+  // Seed: node !a cached without coordinates or battery, but with a cached
+  // position and telemetry packet carrying both. The only network delta is
+  // !a's own bare node row, so the partial rebuild must find the position and
+  // battery in the *seeded* index, not just in this session's delta rows.
+  const config = { ...BASE_CONFIG, instanceDomain: 'demo.example' };
+  const fake = createFakeIndexedDb();
+  const seed = createIndexedDbBackend({ indexedDB: fake.factory, databaseName: 'potato-mesh-cache' });
+  await seed.write('meta', 'meta', { schemaVersion: CACHE_SCHEMA_VERSION, instanceId: config.instanceDomain });
+  await seed.write('nodes', '!a', { value: { node_id: '!a', short_name: 'A', long_name: 'Node A', role: 'CLIENT', last_heard: NOW - 60 }, cachedAt: NOW });
+  await seed.write('positions', '1', { value: { id: 1, node_id: '!a', rx_time: NOW - 60, position_time: NOW - 60, latitude: 12.5, longitude: 34.25 }, cachedAt: NOW });
+  await seed.write('telemetry', '1', { value: { id: 1, node_id: '!a', rx_time: NOW - 60, telemetry_time: NOW - 60, battery_level: 64 }, cachedAt: NOW });
+
+  const env = createDomEnvironment({ includeBody: true });
+  env.registerElement('chat', env.createElement('div', 'chat'));
+  const originalFetch = globalThis.fetch;
+  const originalIdb = globalThis.indexedDB;
+  globalThis.indexedDB = fake.factory;
+  globalThis.fetch = url => {
+    if (url.startsWith('/api/nodes/')) return jsonResponse(null);
+    if (url.startsWith('/api/nodes')) return jsonResponse([{ node_id: '!a', short_name: 'A', long_name: 'Node A', role: 'CLIENT', last_heard: NOW }]);
+    return jsonResponse([]);
+  };
+  try {
+    const { _testUtils } = initializeApp(config);
+    await _testUtils.initialLoad;
+    const nodeA = _testUtils.getNodeById('!a');
+    assert.ok(nodeA, 'node A loaded from the warm seed + delta');
+    assert.equal(nodeA.latitude, 12.5, 'position comes from the seeded (indexed) position history');
+    assert.equal(nodeA.battery_level, 64, 'battery comes from the seeded (indexed) telemetry history');
+  } finally {
+    globalThis.fetch = originalFetch;
+    globalThis.indexedDB = originalIdb;
     env.cleanup();
   }
 });

@@ -1282,6 +1282,15 @@ export function initializeApp(config) {
   let neighborLinesLayer = null;
   let traceLinesLayer = null;
   /**
+   * The one canvas renderer shared by every trace polyline (Phase 5). Created
+   * lazily on the first trace render and reused after that: Leaflet's
+   * `map.getRenderer` adds any renderer passed via a path's `renderer` option
+   * to the map as a layer and never removes it, so a fresh `L.canvas()` per
+   * render would leak one full-size canvas overlay per trace repaint.
+   * @type {?Object}
+   */
+  let traceLineRenderer = null;
+  /**
    * Diffing cache for neighbor-line polylines (issue: frontend perf
    * regression, Phase 5): persists across renders so `renderMap` can recreate
    * only the directions whose segment actually changed instead of clearing
@@ -5355,8 +5364,13 @@ export function initializeApp(config) {
       // L.canvas, and a trace click never anchors on getElement() (unlike
       // neighbor lines), so canvas's lack of a per-shape DOM element costs
       // nothing here. Markers and neighbor lines stay SVG (overlays anchor on
-      // their element — main/marker-overlay-preservation.js).
-      const traceRenderer = typeof L.canvas === 'function' ? L.canvas() : undefined;
+      // their element — main/marker-overlay-preservation.js). One renderer
+      // for the lifetime of the map (see `traceLineRenderer`), never one per
+      // render.
+      if (traceLineRenderer === null && typeof L.canvas === 'function') {
+        traceLineRenderer = L.canvas();
+      }
+      const traceRenderer = traceLineRenderer || undefined;
       traceSegments
         .sort((a, b) => {
           const rxA = Number.isFinite(a.rxTime) ? a.rxTime : -Infinity;

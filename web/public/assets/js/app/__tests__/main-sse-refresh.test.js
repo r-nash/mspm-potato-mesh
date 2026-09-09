@@ -192,10 +192,27 @@ test('a nodes ping with an empty delta renders nothing (Phase 2 stage routing)',
       testUtils.resetStageRenderCounts();
       es.dispatch('change', { data: JSON.stringify({ collection: 'nodes' }) });
       await testUtils.flushLiveRefresh();
-      assert.deepEqual(testUtils.getStageRenderCounts(), { table: 0, map: 0, chat: 0 });
+      assert.deepEqual(testUtils.getStageRenderCounts(), { table: 0, map: 0, chat: 0, stats: 0 });
     } finally {
       globalThis.fetch = originalFetch;
     }
+  });
+});
+
+test('the stats throttle gates live ticks only; a user-driven filter pass always re-fetches stats (Phase 2)', async () => {
+  await runLiveApp({}, async ({ testUtils, FakeEventSource }) => {
+    const es = FakeEventSource.instances[0];
+    // The cold load just rendered stats, so the 10s throttle window is open.
+    testUtils.resetStageRenderCounts();
+    // A live nodes tick with a delta lands inside the window: throttled.
+    es.dispatch('change', { data: JSON.stringify({ collection: 'nodes' }) });
+    await testUtils.flushLiveRefresh();
+    assert.equal(testUtils.getStageRenderCounts().stats, 0, 'live tick inside the window is throttled');
+    // A user-driven pass (filter input / legend toggle) inside the same window
+    // must not be throttled — it re-runs the legend/footer/visibility chain
+    // against the hidden-protocol set the user just changed.
+    testUtils.applyFilter();
+    assert.equal(testUtils.getStageRenderCounts().stats, 1, 'user-driven pass re-fetches stats immediately');
   });
 });
 

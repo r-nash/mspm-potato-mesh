@@ -4216,6 +4216,16 @@ export function initializeApp(config) {
       backfillRepaintDirty = false;
       const stages = stagesForChanges(pendingBackfillCollections);
       pendingBackfillCollections.clear();
+      // A chat-history page waiting alongside collection pages rides this
+      // same pass: the collection stages never include `chatChannels` (no
+      // COLLECTION_BACKFILLS spec is `messages`), and this flush has just
+      // cancelled the idle callback that would otherwise have painted it —
+      // leaving it for "the next flush" strands it when this is the last one.
+      if (backfillChatDirty) {
+        backfillChatDirty = false;
+        stages.chatChannels = true;
+        stages.log = true;
+      }
       renderFilteredOutputs(undefined, stages);
     } else if (backfillChatDirty) {
       backfillChatDirty = false;
@@ -6147,6 +6157,15 @@ export function initializeApp(config) {
         await collectionBackfillPromise;
         flushBackfillRepaint();
       },
+      /** Merge one chat-history page as the backfill pager would (test use only). */
+      commitHistoricalMessages: batch => commitHistoricalMessages(batch),
+      /** Merge one collection backfill page by collection name (test use only). */
+      commitBackfillPage: (name, batch) =>
+        commitBackfillPage(COLLECTION_BACKFILLS.find(spec => spec.name === name), batch),
+      /** Run the coalesced backfill repaint immediately (test use only). */
+      flushBackfillRepaint: () => flushBackfillRepaint(),
+      /** Whether a merged chat-history page is still waiting to be painted (test use only). */
+      isBackfillChatDirty: () => backfillChatDirty,
       /** Empty the persistent cache — the "clear cached data" control (FC4). */
       clearDataCache,
       /** Project an original lat/lon + pixel offset into a display LatLng. */

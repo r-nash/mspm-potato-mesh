@@ -4415,13 +4415,20 @@ export function initializeApp(config) {
       // once the row search below the picks it up next tick.
       const rawTouchedRows = [];
       const foundIds = new Set();
-      for (const node of allNodes) {
+      allNodes.forEach((node, index) => {
         const id = node && (node.node_id ?? node.nodeId);
         if (id != null && touchedNodeIds.has(id)) {
           rawTouchedRows.push(node);
           foundIds.add(id);
+          // Refresh the index for every touched id found in `allNodes` right
+          // now: a node that arrived via this same tick's mergeById (above,
+          // in refresh()) is already in `allNodes` but `nodeArrayPositionById`
+          // has not seen it yet — without this, the splice-back loop below
+          // would treat it as "no existing slot" and append a *second*,
+          // duplicate row instead of overwriting the one already there.
+          nodeArrayPositionById.set(id, index);
         }
-      }
+      });
       for (const id of touchedNodeIds) {
         if (!foundIds.has(id)) rawTouchedRows.push({ node_id: id });
       }

@@ -461,6 +461,8 @@ export function initializeApp(config) {
   let renderTableCount = 0;
   let renderMapCount = 0;
   let renderChatCount = 0;
+  /** Count of times {@link applyFilter} passed its stats gate and fetched `/api/stats`. */
+  let renderStatsCount = 0;
   /**
    * True once the user clicked "show all" to lift the node-table render cap
    * ({@link NODE_TABLE_RENDER_CAP}); persists for the session so subsequent
@@ -5456,12 +5458,18 @@ export function initializeApp(config) {
     // tick's stage routing calls for it, and rate-limited beyond that: the
     // fetch itself has a 30s response cache (stats.js), yet the DOM update
     // chain below still ran on every single tick before this gate existed
-    // (issue: frontend perf regression, Phase 2).
+    // (issue: frontend perf regression, Phase 2). The throttle applies only
+    // to live-driven ticks (a narrowed `stages` object): a user-driven call
+    // (filter input, legend/protocol toggle — always the full default) must
+    // re-run the legend/footer/visibility chain immediately, since those
+    // read the hidden-protocol set the user just changed.
     const nowMs = Date.now();
-    if (!stages.stats || nowMs - lastStatsRenderMs < STATS_RENDER_THROTTLE_MS) {
+    const liveDriven = stages !== ALL_RENDER_STAGES;
+    if (!stages.stats || (liveDriven && nowMs - lastStatsRenderMs < STATS_RENDER_THROTTLE_MS)) {
       return;
     }
     lastStatsRenderMs = nowMs;
+    renderStatsCount += 1;
     const statsRequestId = ++activeStatsRequestId;
     void fetchActiveNodeStats({ nodes: allNodes, nowSeconds: nowSec }).then(stats => {
       if (statsRequestId !== activeStatsRequestId) return;
@@ -6183,19 +6191,23 @@ export function initializeApp(config) {
        * Snapshot of per-stage render counters (test use only) — asserts a given
        * SSE delta only re-ran the render stages its changed collections touch.
        *
-       * @returns {{ table: number, map: number, chat: number }} Counter snapshot.
+       * @returns {{ table: number, map: number, chat: number, stats: number }} Counter snapshot.
        */
       getStageRenderCounts: () => ({
         table: renderTableCount,
         map: renderMapCount,
         chat: renderChatCount,
+        stats: renderStatsCount,
       }),
       /** Reset all per-stage render counters to zero (test use only). */
       resetStageRenderCounts: () => {
         renderTableCount = 0;
         renderMapCount = 0;
         renderChatCount = 0;
+        renderStatsCount = 0;
       },
+      /** Run a user-driven (un-narrowed) filter pass, as the filter input does (test use only). */
+      applyFilter: () => applyFilter(),
       /**
        * Resolve the lazily-imported, memoized node-detail overlay manager (test
        * use only) — the same loader the ``.node-long-link`` click path uses.
